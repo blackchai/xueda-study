@@ -19,8 +19,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /srv/studymate/backend
 RUN apt-get update && apt-get install --no-install-recommends -y ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY backend/pyproject.toml ./
+COPY backend/constraints.txt ./constraints.txt
 COPY backend/app/ ./app/
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir -c constraints.txt .
 COPY backend/alembic.ini ./alembic.ini
 COPY backend/alembic/ ./alembic/
 COPY --from=frontend-builder /workspace/frontend/dist /srv/studymate/frontend
