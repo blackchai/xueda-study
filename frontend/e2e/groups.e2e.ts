@@ -1,0 +1,162 @@
+import { randomBytes } from 'node:crypto'
+import { expect, test, type Page } from '@playwright/test'
+import { loginThroughPage, registerAndLogin } from './helpers.js'
+
+const run = `group_${Date.now().toString(36)}`
+const password = `Study9!${randomBytes(12).toString('hex')}`
+
+async function shareThroughPage(page: Page, record: string, groupId: string, content = false): Promise<void> {
+  await page.goto('/checkins')
+  await page.locator(`[data-checkin-id="${record}"]`).getByRole('button', { name: '分享到小组', exact: true }).click()
+  const row = page.locator(`[data-share-group="${groupId}"]`)
+  await expect(row.getByRole('checkbox')).not.toBeChecked()
+  if (content) await row.getByText('公开学习内容', { exact: true }).click()
+  await row.getByRole('button', { name: '分享至本组', exact: true }).click()
+  await expect(row.getByText('已分享', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '完成', exact: true }).click()
+}
+
+test('三个真实账号的小组闭环：创建、审核、隐私分享、排行榜、目标、重登和退出', async ({ browser }, testInfo) => {
+  const baseURL = testInfo.project.use.baseURL!
+  const sessions = await Promise.all([1, 2, 3].map(() => browser.newContext({ baseURL, timezoneId: 'Asia/Shanghai', viewport: { width: 1440, height: 1000 } })))
+  const [a, b, c] = sessions
+  const [pa, pb, pc] = await Promise.all(sessions.map(ctx => ctx.newPage()))
+  if (!a || !b || !c || !pa || !pb || !pc) throw new Error('Missing browser contexts')
+  const errors: string[] = []
+  for (const page of [pa, pb, pc]) page.on('pageerror', e => errors.push(e.message))
+  try {
+    for (const [page, letter] of [[pa, 'a'], [pb, 'b'], [pc, 'c']] as const) await registerAndLogin(page, `${run}_${letter}`, password)
+    const aId = (await (await a.request.get('/api/v1/auth/me')).json()).data.userId
+    const bId = (await (await b.request.get('/api/v1/auth/me')).json()).data.userId
+    await pa.goto('/groups')
+    await pa.getByRole('button', { name: '创建小组', exact: true }).click()
+    await pa.getByRole('textbox', { name: '小组名称', exact: true }).fill(`C++ 共学_${run}`)
+    await pa.getByRole('textbox', { name: '小组介绍', exact: true }).fill('真实三账号验收，晚间学习 C++')
+    await pa.getByRole('textbox', { name: '成员公告', exact: true }).fill('仅组员可见的约定')
+    await pa.getByRole('button', { name: '确认创建', exact: true }).click()
+    await expect(pa).toHaveURL(/\/groups\/[a-f0-9-]+$/)
+    const gid = pa.url().split('/').pop()!
+    await expect(pa.getByText('仅组员可见的约定', { exact: true })).toBeVisible()
+
+    await pb.goto('/groups')
+    await pb.getByRole('textbox', { name: '搜索小组', exact: true }).fill(run)
+    await pb.getByRole('textbox', { name: '搜索小组', exact: true }).press('Enter')
+    const card = pb.locator(`[data-group-id="${gid}"]`)
+    await card.getByRole('button', { name: '申请加入', exact: true }).click()
+    await expect(card.getByRole('button', { name: '等待审核', exact: true })).toBeDisabled()
+    expect((await b.request.get(`/api/v1/groups/${gid}`)).status()).toBe(404)
+    const pending = (await (await a.request.get(`/api/v1/groups/${gid}/join-requests`)).json()).data.items[0]
+    expect((await c.request.post(`/api/v1/groups/${gid}/join-requests/${pending.id}/approve`)).status()).toBe(404)
+    await pa.getByRole('button', { name: '刷新小组', exact: true }).click()
+    await pa.getByRole('tab', { name: '加入申请 · 1', exact: true }).click()
+    await pa.getByRole('button', { name: '同意', exact: true }).click()
+    await expect(pa.getByRole('tab', { name: '加入申请 · 0', exact: true })).toBeVisible()
+    await pb.goto(`/groups/${gid}`)
+    await expect(pb.getByText('仅组员可见的约定', { exact: true })).toBeVisible()
+
+    // One actual checkin form; B uses the same real API for exact ranking values.
+    await pa.goto('/checkins')
+    await pa.getByRole('button', { name: '记录今日学习', exact: true }).click()
+    await pa.getByPlaceholder('例如：完成数据结构二叉树章节，整理了 6 道错题……').fill(`A 完成 C++ 练习_${run}`)
+    await pa.getByRole('button', { name: '提交打卡', exact: true }).click()
+    await expect(pa.locator('.selected-records')).toContainText(`A 完成 C++ 练习_${run}`)
+    const recordsA = (await (await a.request.get('/api/v1/checkins')).json()).data
+    const ar = recordsA[0]
+    const brResponse = await b.request.post('/api/v1/checkins', { data: { date: ar.date, duration: 120, content: `B_PRIVATE_CONTENT_${run}`, mood: '专注在线' } })
+    expect(brResponse.status()).toBe(201)
+    const br = (await brResponse.json()).data
+    expect((await b.request.post('/api/v1/checkins', { data: { date: ar.date, duration: 45, content: 'NEVER_SHARED_PRIVATE', mood: '有点疲惫' } })).status()).toBe(201)
+    expect((await (await a.request.get(`/api/v1/groups/${gid}/checkins`)).json()).data.total).toBe(0)
+    await shareThroughPage(pa, ar.id, gid, true)
+    await shareThroughPage(pb, br.id, gid)
+    const feed = (await (await a.request.get(`/api/v1/groups/${gid}/checkins`)).json()).data
+    expect(feed.total).toBe(2)
+    expect(JSON.stringify(feed)).not.toMatch(/B_PRIVATE_CONTENT|NEVER_SHARED_PRIVATE|mood|goalId|email|password|school|major/)
+    expect((await c.request.get(`/api/v1/groups/${gid}/checkins`)).status()).toBe(404)
+    expect((await c.request.get(`/api/v1/groups/${gid}/members`)).status()).toBe(404)
+    expect((await b.request.delete(`/api/v1/groups/${gid}/members/${aId}`)).status()).toBe(403)
+    expect((await c.request.put(`/api/v1/checkins/${ar.id}/groups/${gid}`, { data: { shareContent: true } })).status()).toBe(404)
+
+    // Consent can be changed and revoked through the actual dialog.
+    await pb.goto('/checkins')
+    await pb.locator(`[data-checkin-id="${br.id}"]`).getByRole('button', { name: '分享到小组', exact: true }).click()
+    const sharing = pb.locator(`[data-share-group="${gid}"]`)
+    await sharing.getByText('公开学习内容', { exact: true }).click()
+    await sharing.getByRole('button', { name: '保存分享设置', exact: true }).click()
+    await expect.poll(async () => JSON.stringify((await (await a.request.get(`/api/v1/groups/${gid}/checkins`)).json()).data)).toContain(`B_PRIVATE_CONTENT_${run}`)
+    await sharing.getByText('公开学习内容', { exact: true }).click()
+    await sharing.getByRole('button', { name: '保存分享设置', exact: true }).click()
+    await expect.poll(async () => JSON.stringify((await (await a.request.get(`/api/v1/groups/${gid}/checkins`)).json()).data)).not.toContain('B_PRIVATE_CONTENT')
+    await sharing.getByRole('button', { name: '撤回分享', exact: true }).click()
+    await expect(sharing.getByRole('button', { name: '分享至本组', exact: true })).toBeVisible()
+    expect((await (await a.request.get(`/api/v1/groups/${gid}/checkins`)).json()).data.total).toBe(1)
+    await sharing.getByRole('button', { name: '分享至本组', exact: true }).click()
+    await expect(sharing.getByText('已分享', { exact: true })).toBeVisible()
+    await pb.getByRole('button', { name: '完成', exact: true }).click()
+
+    await pa.goto(`/groups/${gid}`)
+    await expect(pa.getByTestId('today-members')).toHaveText('2')
+    await pa.getByRole('tab', { name: '学习排行榜', exact: true }).click()
+    await expect(pa.locator('[data-rank-user]').first()).toHaveAttribute('data-rank-user', aId)
+    await expect(pa.locator(`[data-rank-user="${aId}"]`)).toContainText('3 小时')
+    await expect(pa.locator(`[data-rank-user="${bId}"]`)).toContainText('2 小时')
+    await pa.getByText('今日', { exact: true }).last().click()
+    await expect(pa.locator(`[data-rank-user="${aId}"]`)).toContainText('3 小时')
+    await pa.getByRole('button', { name: '设置目标', exact: true }).click()
+    await pa.getByRole('textbox', { name: '共同目标名称', exact: true }).fill('每人 C++ 学习 10 小时')
+    await pa.getByRole('button', { name: '保存目标', exact: true }).click()
+    await expect(pa.getByTestId('my-goal-progress')).toHaveText('我已完成 180/600 分钟')
+    await pb.goto(`/groups/${gid}`)
+    await pb.reload()
+    await expect(pb.getByTestId('my-goal-progress')).toHaveText('我已完成 120/600 分钟')
+    await pb.goto('/profile')
+    await pb.getByRole('button', { name: '退出登录', exact: true }).click()
+    await loginThroughPage(pb, `${run}_b`, password)
+    await pb.goto(`/groups/${gid}`)
+    await expect(pb.getByTestId('my-goal-progress')).toHaveText('我已完成 120/600 分钟')
+    await pa.screenshot({ path: testInfo.outputPath('group-desktop.png'), fullPage: true })
+    await pa.setViewportSize({ width: 390, height: 844 })
+    await expect(pa.locator('.app-shell')).toHaveCSS('padding-left', '0px')
+    await expect.poll(() => pa.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    await pa.screenshot({ path: testInfo.outputPath('group-mobile.png'), fullPage: true })
+    expect(await pa.evaluate(() => localStorage.getItem('studymate.prototype.social.v1'))).toBeNull()
+    await pb.getByRole('button', { name: '退出小组', exact: true }).click()
+    await pb.getByRole('button', { name: '确认', exact: true }).click()
+    await expect(pb.getByText('一起学习，从加入开始', { exact: true })).toBeVisible()
+    expect((await b.request.get(`/api/v1/groups/${gid}`)).status()).toBe(404)
+    expect((await (await a.request.get(`/api/v1/groups/${gid}`)).json()).data.statistics.totalMinutes).toBe(180)
+    expect((await (await b.request.get('/api/v1/checkins')).json()).data).toHaveLength(2)
+    // Group management is also exercised through real Vue controls.
+    await pa.setViewportSize({ width: 1440, height: 1000 })
+    await pc.goto(`/groups/${gid}`)
+    await pc.getByRole('button', { name: '申请加入', exact: true }).click()
+    await expect(pc.getByText('等待组长审核', { exact: true })).toBeVisible()
+    await pc.getByRole('button', { name: '取消加入申请', exact: true }).click()
+    await expect(pc.getByRole('button', { name: '申请加入', exact: true })).toBeVisible()
+    await pc.getByRole('button', { name: '申请加入', exact: true }).click()
+    await pa.getByRole('button', { name: '刷新小组', exact: true }).click()
+    await pa.getByRole('tab', { name: '加入申请 · 1', exact: true }).click()
+    await pa.getByRole('button', { name: '同意', exact: true }).click()
+    await expect(pa.getByRole('tab', { name: '加入申请 · 0', exact: true })).toBeVisible()
+    await pa.getByRole('tab', { name: '成员 · 2', exact: true }).click()
+    await pa.getByRole('button', { name: '转让组长', exact: true }).click()
+    await pa.getByRole('button', { name: '确认', exact: true }).click()
+    await expect(pa.getByRole('button', { name: '退出小组', exact: true })).toBeVisible()
+    await pc.getByRole('button', { name: '刷新小组', exact: true }).click()
+    await pc.getByRole('tab', { name: '成员 · 2', exact: true }).click()
+    await pc.getByRole('button', { name: '移除成员', exact: true }).click()
+    await pc.getByRole('button', { name: '确认', exact: true }).click()
+    await expect(pc.getByRole('tab', { name: '成员 · 1', exact: true })).toBeVisible()
+    expect((await a.request.get(`/api/v1/groups/${gid}`)).status()).toBe(404)
+    expect((await (await c.request.get(`/api/v1/groups/${gid}`)).json()).data.statistics.totalMinutes).toBe(0)
+    await pc.getByRole('button', { name: '编辑小组', exact: true }).click()
+    await pc.getByRole('textbox', { name: '小组介绍', exact: true }).fill('转让后仍可管理小组')
+    await pc.getByRole('button', { name: '保存小组', exact: true }).click()
+    await expect(pc.getByText('转让后仍可管理小组', { exact: true })).toBeVisible()
+    await pc.getByRole('button', { name: '解散小组', exact: true }).click()
+    await pc.getByRole('button', { name: '确认解散', exact: true }).click()
+    await expect(pc).toHaveURL(/\/groups$/)
+    expect((await c.request.get(`/api/v1/groups/${gid}/preview`)).status()).toBe(404)
+    expect(errors).toEqual([])
+  } finally { await Promise.all(sessions.map(ctx => ctx.close())) }
+})

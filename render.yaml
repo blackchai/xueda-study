@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: xueda-study
+    runtime: docker
+    plan: free
+    autoDeployTrigger: "off"
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health/ready
+    envVars:
+      - key: STUDYMATE_APP_ENV
+        value: production
+      - key: STUDYMATE_AUTO_CREATE_SCHEMA
+        value: "false"
+      - key: STUDYMATE_FRONTEND_DIST_DIR
+        value: /srv/studymate/frontend
+      - key: STUDYMATE_CANONICAL_HOST
+        value: ""
+      - key: STUDYMATE_DATABASE_URL
+        sync: false
+      - key: STUDYMATE_MIGRATION_DATABASE_URL
+        sync: false
+      - key: STUDYMATE_AUTH_SIGNING_SECRET
+        generateValue: true
+      - key: STUDYMATE_AUTH_COOKIE_NAME
+        value: studymate_session
+      - key: STUDYMATE_AUTH_COOKIE_SECURE
+        value: "true"
+      - key: STUDYMATE_AUTH_COOKIE_SAMESITE
+        value: lax
+      - key: STUDYMATE_AUTH_SESSION_DAYS
+        value: "30"
+      - key: STUDYMATE_LOGIN_MAX_FAILURES
+        value: "5"
+      - key: STUDYMATE_CORS_ORIGINS
+        value: ""
