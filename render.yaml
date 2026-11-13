@@ -3,6 +3,7 @@ services:
     name: xueda-study
     runtime: docker
     plan: free
+    region: singapore
     autoDeployTrigger: "off"
     dockerfilePath: ./Dockerfile
     dockerContext: .
