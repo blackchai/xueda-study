@@ -2,7 +2,7 @@
 
 ## 1. 当前状态
 
-后续云部署任务已获授权，最新适配与未完成事项见[云端部署记录](cloud-deployment.md)。下文保留第六阶段当时的验收边界；Render配置、迁移连接和代理策略的最新实现以云端部署记录及当前源码为准。
+2026-11-14 已部署至 **[https://xueda-study.onrender.com](https://xueda-study.onrender.com)**（Render Free + Neon），无需开启本机。最新资源、实际测试和运行限制见[云端部署记录](cloud-deployment.md)。下文保留第六阶段历史验收边界；后续实现和云端状态以上述新记录及当前源码为准。
 
 第六阶段已完成站内通知和本机全站验收。本轮按最新需求不操作域名/DNS、不注册或修改云资源、不执行正式公网部署，也没有把旧静态原型冒充为当前全栈版本。
 
@@ -52,7 +52,7 @@ TLS 终止 + Nginx/云负载均衡
 
 根目录Dockerfile、compose.yaml、render.yaml保留。已用PyYAML解析Compose并静态核对依赖健康检查、loopback映射、独立数据库卷、数据库不暴露端口和env_file引用；这不等于`docker compose config`或实际构建/启动成功。本机没有Docker或Nginx，相关运行检查未执行。
 
-现有render.yaml是较早的“Render Web + Render托管数据库”方案，包含资源套餐和域名配置，**不是已验证的Render + Neon一键方案**。下一阶段应先改为外部Neon连接Secret、删除不需要的数据库/域名自动创建声明，并核对免费套餐与账户限制，才能执行部署。当前没有修改或同步该Blueprint到云端。
+`render.yaml` 已在后续云部署任务中更新为新加坡区免费 Web + 外部 Neon 连接，不再创建 Render 数据库或声明未拥有的域名。实际服务由 MCP 直接创建，模板与实际默认探活方式的差异见云端部署记录。
 
 ## 5. 生产验收清单
 
